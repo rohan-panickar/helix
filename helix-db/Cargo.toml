@@ -11,45 +11,39 @@ repository = "https://github.com/HelixDB/helix-db"
 # HelixDB dependencies
 helix-macros = { path = "../helix-macros" }
 
-# external dependencies
-tokio = { version = "1.44.2", features = ["full"] }
-serde = { version = "1.0.217", features = ["derive"] }
+tokio = { workspace = true }
+serde = { workspace = true }
 bincode = "1.3.3" # TODO: Figure out bincode 2 impl with current serde impl
-sonic-rs = "0.5.0"
-inventory = "0.3.16"
+sonic-rs = { workspace = true }
+inventory = { workspace = true }
 twox-hash = "2.1.0"
-heed3 = "0.22.0"
-uuid = { version = "1.12.1", features = ["v4", "v6", "fast-rng"] }
-rand = "0.9.0"
-chrono = "0.4.39"
+heed3 = { workspace = true }
+uuid = { workspace = true }
+rand = { workspace = true }
+chrono = { workspace = true }
 flume = "0.11.1"
 itertools = "0.14.0"
-tempfile = "3.20.0"
+tempfile = { workspace = true }
 paste = "1.0.15"
 
-# compiler dependencies
 pest = { version = "2.7", optional = true }
 pest_derive = { version = "2.7", optional = true }
 
-# embedding dependencies
-reqwest = { version = "0.12.15", features = [
-    "json",
-    "blocking",
-], optional = true }
+reqwest = { workspace = true, optional = true }
 url = { version = "2.5", optional = true }
 tokio-util = { version = "0.7.15", features = ["compat"] }
 axum = "0.8.4"
-tracing = "0.1.41"
+tracing = { workspace = true }
 core_affinity = "0.8.3"
-async-trait = "0.1.88"
+async-trait = { workspace = true }
 thiserror = "2.0.12"
 
 [dev-dependencies]
-rand = "0.9.0"
+rand = { workspace = true }
 lazy_static = "1.4.0"
 polars = { version = "0.46.0", features = ["parquet", "lazy", "json"] }
 kdam = "0.3"
-num_cpus = "1.17" # TODO: write ourselves
+num_cpus = "1.17" #TODO: Make custom impl to remove dep.
 
 [features]
 debug-output = ["helix-macros/debug-output"]
