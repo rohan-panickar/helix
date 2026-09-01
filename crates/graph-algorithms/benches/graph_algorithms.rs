@@ -91,6 +91,38 @@ fn algorithms(criterion: &mut Criterion) {
                 .expect("benchmark seed exists")
         });
     });
+    group.bench_function("breadth_first_undirected", |bencher| {
+        bencher.iter(|| {
+            undirected
+                .traverse(&TraversalOptions::breadth_first(
+                    ["n000000".to_string()],
+                    10,
+                ))
+                .expect("benchmark seed exists")
+        });
+    });
+    group.bench_function("breadth_first_undirected_uuid", |bencher| {
+        let uuid_id = |node: usize| format!("00000000-aaaa-bbbb-cccc-{node:012}");
+        let nodes = (0..1_000).map(|node| Node::new(uuid_id(node)));
+        let edges = (0..1_000_usize).flat_map(|source| {
+            (1..=4).map(move |offset| {
+                let target = (source + offset) % 1_000;
+                Edge::new(
+                    format!("00000000-eeee-ffff-0000-{source:06}{target:06}"),
+                    uuid_id(source),
+                    uuid_id(target),
+                )
+            })
+        });
+        let uuid_graph =
+            Graph::new(GraphKind::Graph, nodes, edges).expect("uuid benchmark topology is valid");
+        let seed = uuid_id(0);
+        bencher.iter(|| {
+            uuid_graph
+                .traverse(&TraversalOptions::breadth_first([seed.clone()], 10))
+                .expect("benchmark seed exists")
+        });
+    });
     group.bench_function("shortest_path", |bencher| {
         bencher.iter(|| {
             directed.shortest_path(

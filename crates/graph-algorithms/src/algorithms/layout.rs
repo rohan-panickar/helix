@@ -91,6 +91,20 @@ impl Graph {
             let node = self.node_index(&position.node_id)?;
             positions[node] = (position.x, position.y);
         }
+        let mut springs = Vec::with_capacity(self.edge_count());
+        for edge in self.edges() {
+            let source = self.node_index(&edge.source)?;
+            let target = self.node_index(&edge.target)?;
+            if source == target {
+                continue;
+            }
+            let weight = if options.weighted {
+                edge.weight.unwrap_or(1.0)
+            } else {
+                1.0
+            };
+            springs.push((source, target, weight));
+        }
         const MIN_DISTANCE: f64 = 1e-9;
         for step in 0..options.iterations.get() {
             let mut displacement = vec![(0.0, 0.0); self.node_count()];
@@ -114,20 +128,10 @@ impl Graph {
                     displacement[right].1 -= force_y;
                 }
             }
-            for edge in self.edges() {
-                let source = self.node_index(&edge.source)?;
-                let target = self.node_index(&edge.target)?;
-                if source == target {
-                    continue;
-                }
+            for &(source, target, weight) in &springs {
                 let dx = positions[source].0 - positions[target].0;
                 let dy = positions[source].1 - positions[target].1;
                 let distance = dx.hypot(dy).max(MIN_DISTANCE);
-                let weight = if options.weighted {
-                    edge.weight.unwrap_or(1.0)
-                } else {
-                    1.0
-                };
                 let force = distance * distance / k * weight;
                 let force_x = dx / distance * force;
                 let force_y = dy / distance * force;

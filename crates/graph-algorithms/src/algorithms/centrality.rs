@@ -138,6 +138,39 @@ struct SingleSourceState {
     stack: Vec<usize>,
     predecessors: Vec<Vec<(usize, usize)>>,
     path_counts: Vec<f64>,
+    unweighted_distance: Vec<usize>,
+    weighted_distance: Vec<f64>,
+    settled: Vec<bool>,
+    queue: std::collections::VecDeque<usize>,
+    heap: BinaryHeap<HeapState>,
+}
+
+impl SingleSourceState {
+    fn new(node_count: usize) -> Self {
+        Self {
+            stack: Vec::new(),
+            predecessors: vec![Vec::new(); node_count],
+            path_counts: vec![0.0; node_count],
+            unweighted_distance: vec![usize::MAX; node_count],
+            weighted_distance: vec![f64::INFINITY; node_count],
+            settled: vec![false; node_count],
+            queue: std::collections::VecDeque::new(),
+            heap: BinaryHeap::new(),
+        }
+    }
+
+    fn reset(&mut self) {
+        self.stack.clear();
+        for row in &mut self.predecessors {
+            row.clear();
+        }
+        self.path_counts.fill(0.0);
+        self.unweighted_distance.fill(usize::MAX);
+        self.weighted_distance.fill(f64::INFINITY);
+        self.settled.fill(false);
+        self.queue.clear();
+        self.heap.clear();
+    }
 }
 
 impl Graph {
@@ -149,9 +182,11 @@ impl Graph {
         self.validate_centrality_weight(options.weight)?;
         let (sources, sampled_count) = centrality_sources(self.node_count(), options.mode);
         let mut scores = vec![0.0; self.node_count()];
+        let mut state = SingleSourceState::new(self.node_count());
+        let mut dependencies = vec![0.0; self.node_count()];
         for source in sources {
-            let mut state = self.single_source_paths(source, options.weight);
-            let mut dependencies = vec![0.0; self.node_count()];
+            self.single_source_paths(source, options.weight, &mut state);
+            dependencies.fill(0.0);
             if options.endpoints {
                 scores[source] += state.stack.len().saturating_sub(1) as f64;
             }
@@ -195,9 +230,11 @@ impl Graph {
         self.validate_centrality_weight(options.weight)?;
         let (sources, sampled_count) = centrality_sources(self.node_count(), options.mode);
         let mut scores = vec![0.0; self.edge_count()];
+        let mut state = SingleSourceState::new(self.node_count());
+        let mut dependencies = vec![0.0; self.node_count()];
         for source in sources {
-            let mut state = self.single_source_paths(source, options.weight);
-            let mut dependencies = vec![0.0; self.node_count()];
+            self.single_source_paths(source, options.weight, &mut state);
+            dependencies.fill(0.0);
             while let Some(node) = state.stack.pop() {
                 assert!(
                     state.path_counts[node] > 0.0,
@@ -249,83 +286,73 @@ impl Graph {
         Ok(())
     }
 
-    fn single_source_paths(&self, source: usize, weight: PathWeight) -> SingleSourceState {
+    fn single_source_paths(
+        &self,
+        source: usize,
+        weight: PathWeight,
+        state: &mut SingleSourceState,
+    ) {
+        state.reset();
         match weight {
-            PathWeight::Unweighted => self.single_source_unweighted(source),
-            PathWeight::Weighted => self.single_source_weighted(source),
+            PathWeight::Unweighted => self.single_source_unweighted(source, state),
+            PathWeight::Weighted => self.single_source_weighted(source, state),
         }
     }
 
-    fn single_source_unweighted(&self, source: usize) -> SingleSourceState {
-        let mut stack = Vec::new();
-        let mut predecessors = vec![Vec::new(); self.node_count()];
-        let mut path_counts = vec![0.0; self.node_count()];
-        let mut distance = vec![usize::MAX; self.node_count()];
-        path_counts[source] = 1.0;
-        distance[source] = 0;
-        let mut queue = std::collections::VecDeque::from([source]);
-        while let Some(node) = queue.pop_front() {
-            stack.push(node);
+    fn single_source_unweighted(&self, source: usize, state: &mut SingleSourceState) {
+        state.path_counts[source] = 1.0;
+        state.unweighted_distance[source] = 0;
+        state.queue.push_back(source);
+        while let Some(node) = state.queue.pop_front() {
+            state.stack.push(node);
             for arc in self.arcs(node, TraversalDirection::Out) {
-                if distance[arc.neighbor] == usize::MAX {
-                    distance[arc.neighbor] = distance[node] + 1;
-                    queue.push_back(arc.neighbor);
+                if state.unweighted_distance[arc.neighbor] == usize::MAX {
+                    state.unweighted_distance[arc.neighbor] = state.unweighted_distance[node] + 1;
+                    state.queue.push_back(arc.neighbor);
                 }
-                if distance[arc.neighbor] == distance[node] + 1 {
-                    path_counts[arc.neighbor] += path_counts[node];
-                    predecessors[arc.neighbor].push((node, arc.edge));
+                if state.unweighted_distance[arc.neighbor] == state.unweighted_distance[node] + 1 {
+                    state.path_counts[arc.neighbor] += state.path_counts[node];
+                    state.predecessors[arc.neighbor].push((node, arc.edge));
                 }
             }
         }
-        SingleSourceState {
-            stack,
-            predecessors,
-            path_counts,
-        }
     }
 
-    fn single_source_weighted(&self, source: usize) -> SingleSourceState {
-        let mut stack = Vec::new();
-        let mut predecessors = vec![Vec::new(); self.node_count()];
-        let mut path_counts = vec![0.0; self.node_count()];
-        let mut distance = vec![f64::INFINITY; self.node_count()];
-        let mut settled = vec![false; self.node_count()];
-        let mut heap = BinaryHeap::from([HeapState {
+    fn single_source_weighted(&self, source: usize, state: &mut SingleSourceState) {
+        state.heap.push(HeapState {
             distance: 0.0,
             order: 0,
             node: source,
-        }]);
+        });
         let mut order = 1;
-        distance[source] = 0.0;
-        path_counts[source] = 1.0;
-        while let Some(state) = heap.pop() {
-            if settled[state.node] || state.distance > distance[state.node] {
+        state.weighted_distance[source] = 0.0;
+        state.path_counts[source] = 1.0;
+        while let Some(current) = state.heap.pop() {
+            if state.settled[current.node]
+                || current.distance > state.weighted_distance[current.node]
+            {
                 continue;
             }
-            settled[state.node] = true;
-            stack.push(state.node);
-            for arc in self.arcs(state.node, TraversalDirection::Out) {
-                let next_distance = state.distance + self.edge_at(arc.edge).weight.unwrap_or(1.0);
-                if next_distance < distance[arc.neighbor] {
-                    distance[arc.neighbor] = next_distance;
-                    path_counts[arc.neighbor] = path_counts[state.node];
-                    predecessors[arc.neighbor] = vec![(state.node, arc.edge)];
-                    heap.push(HeapState {
+            state.settled[current.node] = true;
+            state.stack.push(current.node);
+            for arc in self.arcs(current.node, TraversalDirection::Out) {
+                let next_distance = current.distance + self.edge_at(arc.edge).weight.unwrap_or(1.0);
+                if next_distance < state.weighted_distance[arc.neighbor] {
+                    state.weighted_distance[arc.neighbor] = next_distance;
+                    state.path_counts[arc.neighbor] = state.path_counts[current.node];
+                    state.predecessors[arc.neighbor].clear();
+                    state.predecessors[arc.neighbor].push((current.node, arc.edge));
+                    state.heap.push(HeapState {
                         distance: next_distance,
                         order,
                         node: arc.neighbor,
                     });
                     order += 1;
-                } else if next_distance == distance[arc.neighbor] {
-                    path_counts[arc.neighbor] += path_counts[state.node];
-                    predecessors[arc.neighbor].push((state.node, arc.edge));
+                } else if next_distance == state.weighted_distance[arc.neighbor] {
+                    state.path_counts[arc.neighbor] += state.path_counts[current.node];
+                    state.predecessors[arc.neighbor].push((current.node, arc.edge));
                 }
             }
-        }
-        SingleSourceState {
-            stack,
-            predecessors,
-            path_counts,
         }
     }
 }

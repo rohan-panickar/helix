@@ -1,4 +1,3 @@
-use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::ops::Deref;
@@ -412,6 +411,7 @@ pub struct GraphInner {
     edges: Vec<Edge>,
     node_indexes: BTreeMap<NodeId, usize>,
     edge_indexes: BTreeMap<EdgeId, usize>,
+    edge_ranks: Vec<u32>,
     outgoing: Csr,
     incoming: Csr,
 }
@@ -512,6 +512,24 @@ impl Graph {
             .map(|(index, edge)| (edge.id.clone(), index))
             .collect::<BTreeMap<_, _>>();
 
+        let edge_count = u32::try_from(edges.len()).expect("edge count fits in a u32 sort rank");
+        let edge_ranks = if edges.iter().any(|edge| edge.graphify_key.is_some()) {
+            let mut keyed = edges
+                .iter()
+                .zip(0..edge_count)
+                .map(|(edge, index)| (edge.graphify_key.as_ref(), index))
+                .collect::<Vec<_>>();
+            keyed.sort_unstable();
+            let mut ranks = vec![0_u32; edges.len()];
+            for (rank, (_, edge_index)) in keyed.into_iter().enumerate() {
+                ranks[edge_index as usize] =
+                    u32::try_from(rank).expect("edge count fits in a u32 sort rank");
+            }
+            ranks
+        } else {
+            (0..edge_count).collect()
+        };
+
         let mut outgoing_rows = vec![Vec::new(); nodes.len()];
         let mut incoming_rows = vec![Vec::new(); nodes.len()];
         for (edge_index, edge) in edges.iter().enumerate() {
@@ -527,7 +545,7 @@ impl Graph {
             });
         }
         for row in outgoing_rows.iter_mut().chain(incoming_rows.iter_mut()) {
-            row.sort_by(|left, right| compare_arcs(&nodes, &edges, left, right));
+            row.sort_unstable_by_key(|arc| (arc.neighbor, edge_ranks[arc.edge]));
         }
 
         Ok(Self {
@@ -538,6 +556,7 @@ impl Graph {
                 edges,
                 node_indexes,
                 edge_indexes,
+                edge_ranks,
                 outgoing: Csr::from_rows(outgoing_rows),
                 incoming: Csr::from_rows(incoming_rows),
             }),
@@ -642,7 +661,7 @@ impl Graph {
             super::TraversalDirection::Out => ArcIter::One(self.outgoing(node).iter()),
             super::TraversalDirection::In => ArcIter::One(self.incoming(node).iter()),
             super::TraversalDirection::Both => ArcIter::Both {
-                graph: self,
+                edge_ranks: &self.edge_ranks,
                 node,
                 outgoing: self.outgoing(node),
                 incoming: self.incoming(node),
@@ -653,22 +672,10 @@ impl Graph {
     }
 }
 
-fn compare_arcs(nodes: &[Node], edges: &[Edge], left: &ArcRef, right: &ArcRef) -> Ordering {
-    nodes[left.neighbor]
-        .id
-        .cmp(&nodes[right.neighbor].id)
-        .then_with(|| {
-            edges[left.edge]
-                .graphify_key
-                .cmp(&edges[right.edge].graphify_key)
-        })
-        .then_with(|| edges[left.edge].id.cmp(&edges[right.edge].id))
-}
-
 pub(crate) enum ArcIter<'a> {
     One(slice::Iter<'a, ArcRef>),
     Both {
-        graph: &'a Graph,
+        edge_ranks: &'a [u32],
         node: usize,
         outgoing: &'a [ArcRef],
         incoming: &'a [ArcRef],
@@ -684,7 +691,7 @@ impl Iterator for ArcIter<'_> {
         match self {
             Self::One(arcs) => arcs.next().copied(),
             Self::Both {
-                graph,
+                edge_ranks,
                 node,
                 outgoing,
                 incoming,
@@ -699,8 +706,8 @@ impl Iterator for ArcIter<'_> {
                 }
                 match (outgoing.get(*outgoing_index), incoming.get(*incoming_index)) {
                     (Some(left), Some(right))
-                        if compare_arcs(&graph.nodes, &graph.edges, left, right)
-                            != Ordering::Greater =>
+                        if (left.neighbor, edge_ranks[left.edge])
+                            <= (right.neighbor, edge_ranks[right.edge]) =>
                     {
                         *outgoing_index += 1;
                         Some(*left)

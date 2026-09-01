@@ -1,5 +1,4 @@
 use std::cmp::Ordering;
-use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 
 use serde::{Deserialize, Serialize};
@@ -177,28 +176,38 @@ fn refine_connected(
     let mut community_sizes = vec![1_usize; node_count];
     let mut order = (0..node_count).collect::<Vec<_>>();
     shuffle(&mut order, seed);
+    let mut edge_weight_by_community = vec![0.0_f64; node_count];
+    let mut touched_communities = Vec::new();
+    let mut seen = vec![false; node_count];
 
     for node in order {
         let old_community = refined[node];
         if community_sizes[old_community] != 1 {
             continue;
         }
-        let mut edge_weight_by_community = BTreeMap::<usize, f64>::new();
+        touched_communities.clear();
         for (neighbor, weight) in &graph.adjacency[node] {
             if *weight > 0.0 && parent[*neighbor] == parent[node] {
-                *edge_weight_by_community
-                    .entry(refined[*neighbor])
-                    .or_default() += *weight;
+                let community = refined[*neighbor];
+                if !seen[community] {
+                    seen[community] = true;
+                    touched_communities.push(community);
+                }
+                edge_weight_by_community[community] += *weight;
             }
         }
-        if edge_weight_by_community.is_empty() {
+        if touched_communities.is_empty() {
             continue;
         }
+        touched_communities.sort_unstable();
 
         let node_degree = graph.degrees[node];
         let denominator = 2.0 * graph.total_weight * graph.total_weight;
         let mut candidates = vec![(old_community, 1.0_f64)];
-        for (community, edge_weight) in edge_weight_by_community {
+        for &community in &touched_communities {
+            let edge_weight = edge_weight_by_community[community];
+            edge_weight_by_community[community] = 0.0;
+            seen[community] = false;
             if community == old_community {
                 continue;
             }

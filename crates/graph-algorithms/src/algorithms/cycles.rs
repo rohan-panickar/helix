@@ -169,19 +169,44 @@ impl Graph {
             .iter()
             .map(|edge| self.edge_at(*edge).id.clone())
             .collect::<Vec<_>>();
-        let mut candidates = rotations(&nodes, &edges);
+        let mut sequences = vec![(nodes, edges)];
         if !self.is_directed() {
+            let (nodes, edges) = &sequences[0];
             let reverse_nodes = nodes.iter().cloned().rev().collect::<Vec<_>>();
             let edge_count = edges.len();
             let reverse_edges = (0..edge_count)
                 .map(|index| edges[(edge_count + edge_count - 2 - index) % edge_count].clone())
                 .collect::<Vec<_>>();
-            candidates.extend(rotations(&reverse_nodes, &reverse_edges));
+            sequences.push((reverse_nodes, reverse_edges));
         }
-        candidates
-            .into_iter()
-            .min()
-            .expect("a cycle always has at least one rotation")
+        let length = sequences[0].0.len();
+        let mut best = (0, 0);
+        for (sequence_index, sequence) in sequences.iter().enumerate() {
+            for offset in 0..length {
+                if (sequence_index, offset) == (0, 0) {
+                    continue;
+                }
+                if compare_rotations(sequence, offset, &sequences[best.0], best.1)
+                    == std::cmp::Ordering::Less
+                {
+                    best = (sequence_index, offset);
+                }
+            }
+        }
+        let (nodes, edges) = &sequences[best.0];
+        let offset = best.1;
+        (
+            nodes[offset..]
+                .iter()
+                .chain(nodes[..offset].iter())
+                .cloned()
+                .collect(),
+            edges[offset..]
+                .iter()
+                .chain(edges[..offset].iter())
+                .cloned()
+                .collect(),
+        )
     }
 
     fn connected_components(&self) -> Vec<Vec<usize>> {
@@ -218,38 +243,14 @@ impl Graph {
             components: Vec<Vec<usize>>,
         }
 
-        fn visit(graph: &Graph, node: usize, state: &mut Tarjan) {
-            let node_index = state.next_index;
-            state.next_index += 1;
-            state.indexes[node] = Some(node_index);
-            state.lowlinks[node] = node_index;
-            state.stack.push(node);
-            state.on_stack[node] = true;
-            for arc in graph.arcs(node, TraversalDirection::Out) {
-                match state.indexes[arc.neighbor] {
-                    None => {
-                        visit(graph, arc.neighbor, state);
-                        state.lowlinks[node] =
-                            state.lowlinks[node].min(state.lowlinks[arc.neighbor]);
-                    }
-                    Some(index) if state.on_stack[arc.neighbor] => {
-                        state.lowlinks[node] = state.lowlinks[node].min(index);
-                    }
-                    Some(_) => {}
-                }
-            }
-            if state.lowlinks[node] == node_index {
-                let mut component = Vec::new();
-                loop {
-                    let member = state.stack.pop().expect("SCC root is on the Tarjan stack");
-                    state.on_stack[member] = false;
-                    component.push(member);
-                    if member == node {
-                        break;
-                    }
-                }
-                component.sort_by(|left, right| graph.node_id(*left).cmp(graph.node_id(*right)));
-                state.components.push(component);
+        impl Tarjan {
+            fn open(&mut self, node: usize) {
+                let node_index = self.next_index;
+                self.next_index += 1;
+                self.indexes[node] = Some(node_index);
+                self.lowlinks[node] = node_index;
+                self.stack.push(node);
+                self.on_stack[node] = true;
             }
         }
 
@@ -261,9 +262,48 @@ impl Graph {
             on_stack: vec![false; self.node_count()],
             components: Vec::new(),
         };
-        for node in 0..self.node_count() {
-            if state.indexes[node].is_none() {
-                visit(self, node, &mut state);
+        let mut call_stack = Vec::new();
+        for root in 0..self.node_count() {
+            if state.indexes[root].is_some() {
+                continue;
+            }
+            state.open(root);
+            call_stack.push((root, self.arcs(root, TraversalDirection::Out)));
+            while let Some((node, arcs)) = call_stack.last_mut() {
+                let node = *node;
+                if let Some(arc) = arcs.next() {
+                    match state.indexes[arc.neighbor] {
+                        None => {
+                            state.open(arc.neighbor);
+                            call_stack.push((
+                                arc.neighbor,
+                                self.arcs(arc.neighbor, TraversalDirection::Out),
+                            ));
+                        }
+                        Some(index) if state.on_stack[arc.neighbor] => {
+                            state.lowlinks[node] = state.lowlinks[node].min(index);
+                        }
+                        Some(_) => {}
+                    }
+                    continue;
+                }
+                call_stack.pop();
+                if let Some((parent, _)) = call_stack.last() {
+                    state.lowlinks[*parent] = state.lowlinks[*parent].min(state.lowlinks[node]);
+                }
+                if state.lowlinks[node] == state.indexes[node].expect("visited node has an index") {
+                    let mut component = Vec::new();
+                    loop {
+                        let member = state.stack.pop().expect("SCC root is on the Tarjan stack");
+                        state.on_stack[member] = false;
+                        component.push(member);
+                        if member == node {
+                            break;
+                        }
+                    }
+                    component.sort_by(|left, right| self.node_id(*left).cmp(self.node_id(*right)));
+                    state.components.push(component);
+                }
             }
         }
         state
@@ -273,23 +313,28 @@ impl Graph {
     }
 }
 
-fn rotations(nodes: &[NodeId], edges: &[EdgeId]) -> Vec<(Vec<NodeId>, Vec<EdgeId>)> {
-    (0..nodes.len())
-        .map(|offset| {
-            (
-                nodes[offset..]
-                    .iter()
-                    .chain(nodes[..offset].iter())
-                    .cloned()
-                    .collect(),
-                edges[offset..]
-                    .iter()
-                    .chain(edges[..offset].iter())
-                    .cloned()
-                    .collect(),
-            )
-        })
-        .collect()
+fn compare_rotations(
+    left: &(Vec<NodeId>, Vec<EdgeId>),
+    left_offset: usize,
+    right: &(Vec<NodeId>, Vec<EdgeId>),
+    right_offset: usize,
+) -> std::cmp::Ordering {
+    let length = left.0.len();
+    for index in 0..length {
+        let ordering =
+            left.0[(left_offset + index) % length].cmp(&right.0[(right_offset + index) % length]);
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
+    }
+    for index in 0..length {
+        let ordering =
+            left.1[(left_offset + index) % length].cmp(&right.1[(right_offset + index) % length]);
+        if ordering != std::cmp::Ordering::Equal {
+            return ordering;
+        }
+    }
+    std::cmp::Ordering::Equal
 }
 
 #[cfg(test)]

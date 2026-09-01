@@ -141,29 +141,33 @@ impl LevelGraph {
         }
         let mut order = (0..node_count).collect::<Vec<_>>();
         shuffle(&mut order, seed);
+        let mut weights_by_community = vec![0.0_f64; node_count];
+        let mut touched_communities = Vec::new();
+        let mut seen = vec![false; node_count];
         let mut moved_any = false;
         for _ in 0..max_iterations {
             let mut moved = false;
             for node in &order {
                 let old_community = communities[*node];
                 let degree = self.degrees[*node];
-                let mut weights_by_community = BTreeMap::<usize, f64>::new();
+                touched_communities.clear();
                 for (neighbor, weight) in &self.adjacency[*node] {
-                    *weights_by_community
-                        .entry(communities[*neighbor])
-                        .or_default() += *weight;
+                    let community = communities[*neighbor];
+                    if !seen[community] {
+                        seen[community] = true;
+                        touched_communities.push(community);
+                    }
+                    weights_by_community[community] += *weight;
                 }
+                touched_communities.sort_unstable();
                 community_degrees[old_community] -= degree;
                 let denominator = 2.0 * self.total_weight * self.total_weight;
-                let remove_cost = -weights_by_community
-                    .get(&old_community)
-                    .copied()
-                    .unwrap_or(0.0)
-                    / self.total_weight
+                let remove_cost = -weights_by_community[old_community] / self.total_weight
                     + resolution * community_degrees[old_community] * degree / denominator;
                 let mut best_community = old_community;
                 let mut best_gain = 0.0;
-                for (candidate, edge_weight) in weights_by_community {
+                for &candidate in &touched_communities {
+                    let edge_weight = weights_by_community[candidate];
                     let gain = remove_cost + edge_weight / self.total_weight
                         - resolution * community_degrees[candidate] * degree / denominator;
                     if gain > best_gain
@@ -172,6 +176,10 @@ impl LevelGraph {
                         best_gain = gain;
                         best_community = candidate;
                     }
+                }
+                for &community in &touched_communities {
+                    weights_by_community[community] = 0.0;
+                    seen[community] = false;
                 }
                 community_degrees[best_community] += degree;
                 if best_community != old_community {
@@ -233,8 +241,8 @@ impl Graph {
             });
         }
 
-        let original_edges = LevelGraph::from_original(self).edges;
         let mut level = LevelGraph::from_original(self);
+        let original_edges = level.edges.clone();
         let mut seed = options.seed;
         let mut final_assignment = (0..self.node_count()).collect::<Vec<_>>();
         let mut previous_modularity = f64::NEG_INFINITY;
