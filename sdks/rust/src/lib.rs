@@ -147,6 +147,7 @@ struct ServerClient {
     client: ReqwestClient,
     url: reqwest::Url,
     api_key: Option<String>,
+    database_id: Option<String>,
 }
 
 impl fmt::Debug for Client {
@@ -157,6 +158,7 @@ impl fmt::Debug for Client {
                 .field("mode", &"server")
                 .field("url", &server.url)
                 .field("api_key", &server.api_key.as_ref().map(|_| "<redacted>"))
+                .field("database_id", &server.database_id)
                 .finish(),
             #[cfg(feature = "embedded")]
             ClientBackend::Embedded(_) => formatter
@@ -430,6 +432,7 @@ impl Client {
                 client: ReqwestClient::new(),
                 url,
                 api_key: None,
+                database_id: None,
             }),
         })
     }
@@ -495,6 +498,23 @@ impl Client {
         match &mut self.backend {
             ClientBackend::Server(server) => {
                 server.api_key = api_key.map(|key| key.to_string());
+            }
+            #[cfg(feature = "embedded")]
+            ClientBackend::Embedded(_) => {}
+        }
+        self
+    }
+
+    /// Attach (or clear) the database selection header sent with every request.
+    ///
+    /// A Helix Cloud GA shared gateway requires `X-Helix-Database-Id` beside
+    /// the bearer key; a database-specific cluster-mode gateway rejects it.
+    /// Passing `Some(id)` sets the header on each request; passing `None`
+    /// clears it. Leave it unset for cluster-mode and local endpoints.
+    pub fn with_database_id(mut self, database_id: Option<&str>) -> Self {
+        match &mut self.backend {
+            ClientBackend::Server(server) => {
+                server.database_id = database_id.map(|id| id.to_string());
             }
             #[cfg(feature = "embedded")]
             ClientBackend::Embedded(_) => {}
@@ -669,6 +689,9 @@ impl<'hlx, 'a, R> QueryExecutionRequest<'hlx, 'a, R> {
                 }
                 if let Some(api_key) = &server.api_key {
                     request = request.bearer_auth(api_key);
+                }
+                if let Some(database_id) = &server.database_id {
+                    request = request.header("X-Helix-Database-Id", database_id);
                 }
                 let response = request.body(sonic_rs::to_vec(&self.query)?).send().await?;
                 match response.status() {
